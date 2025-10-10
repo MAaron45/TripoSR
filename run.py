@@ -82,9 +82,9 @@ parser.add_argument(
 )
 parser.add_argument(
     "--output-dir",
-    default="output/",
+    default="outputs/",
     type=str,
-    help="Output directory to save the results. Default: 'output/'",
+    help="Output directory to save the results. Default: 'outputs/'",
 )
 parser.add_argument(
     "--model-save-format",
@@ -185,7 +185,16 @@ for i, image in enumerate(images):
         xatlas.export(out_mesh_path, meshes[0].vertices[bake_output["vmapping"]], bake_output["indices"], bake_output["uvs"], meshes[0].vertex_normals[bake_output["vmapping"]])
         Image.fromarray((bake_output["colors"] * 255.0).astype(np.uint8)).transpose(Image.FLIP_TOP_BOTTOM).save(out_texture_path)
         timer.end("Exporting mesh and texture")
+
     else:
         timer.start("Exporting mesh")
         meshes[0].export(out_mesh_path)
         timer.end("Exporting mesh")
+
+# After generation, automatically run the porting script to import assets into UE5
+import subprocess
+import sys
+subprocess.run([
+    sys.executable,
+    "/home/mwaar/2025Fall-Gulfstream-Generative-AI-Capstone/backend/scripts/port_to_ue5.py"
+])
