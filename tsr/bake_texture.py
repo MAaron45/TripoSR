@@ -137,12 +137,19 @@ def rasterize_position_atlas(
 def positions_to_colors(model, scene_code, positions_texture, texture_resolution):
     positions = torch.tensor(positions_texture.reshape(-1, 4)[:, :-1])
     with torch.no_grad():
+
+        # Assign all tensors to cuda 0 (gpu)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model.to(device)
+        scene_code = scene_code.to(device)
+        positions = positions.to(device)
+
         queried_grid = model.renderer.query_triplane(
             model.decoder,
             positions,
             scene_code,
         )
-    rgb_f = queried_grid["color"].numpy().reshape(-1, 3)
+    rgb_f = queried_grid["color"].detach().to("cpu").numpy().reshape(-1, 3)
     rgba_f = np.insert(rgb_f, 3, positions_texture.reshape(-1, 4)[:, -1], axis=1)
     rgba_f[rgba_f[:, -1] == 0.0] = [0, 0, 0, 0]
     return rgba_f.reshape(texture_resolution, texture_resolution, 4)
