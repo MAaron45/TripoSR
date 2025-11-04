@@ -118,6 +118,7 @@ device = args.device
 if not torch.cuda.is_available():
     device = "cpu"
 
+# === Initialize model ===
 timer.start("Initializing model")
 model = TSR.from_pretrained(
     args.pretrained_model_name_or_path,
@@ -128,6 +129,7 @@ model.renderer.set_chunk_size(args.chunk_size)
 model.to(device)
 timer.end("Initializing model")
 
+# === Preprocess input images ===
 timer.start("Processing images")
 images = []
 
@@ -136,7 +138,20 @@ if args.no_remove_bg:
 else:
     rembg_session = rembg.new_session()
 
-for i, image_path in enumerate(args.image):
+for image_path in args.image:
+    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    output_subdir = os.path.join(output_dir, base_name)
+
+    # --- check for duplicates and increment ---
+    counter = 1
+    while os.path.exists(output_subdir):
+        output_subdir = os.path.join(output_dir, f"{base_name}{counter}")
+        counter += 1
+
+    # update base_name if it was incremented
+    base_name = os.path.basename(output_subdir)
+    os.makedirs(output_subdir, exist_ok=True)
+
     if args.no_remove_bg:
         image = np.array(Image.open(image_path).convert("RGB"))
     else:
@@ -145,45 +160,59 @@ for i, image_path in enumerate(args.image):
         image = np.array(image).astype(np.float32) / 255.0
         image = image[:, :, :3] * image[:, :, 3:4] + (1 - image[:, :, 3:4]) * 0.5
         image = Image.fromarray((image * 255.0).astype(np.uint8))
-        if not os.path.exists(os.path.join(output_dir, str(i))):
-            os.makedirs(os.path.join(output_dir, str(i)))
-        image.save(os.path.join(output_dir, str(i), f"input.png"))
-    images.append(image)
+
+    image.save(os.path.join(output_subdir, f"{base_name}_input.png"))
+    images.append((image, base_name, output_subdir))
+
 timer.end("Processing images")
 
-for i, image in enumerate(images):
-    logging.info(f"Running image {i + 1}/{len(images)} ...")
+# === Run model + save outputs ===
+for i, (image, base_name, output_subdir) in enumerate(images):
+    logging.info(f"Running image {i + 1}/{len(images)}: {base_name}")
 
     timer.start("Running model")
     with torch.no_grad():
         scene_codes = model([image], device=device)
     timer.end("Running model")
 
+    # Optional rendering pass
     if args.render:
         timer.start("Rendering")
         render_images = model.render(scene_codes, n_views=30, return_type="pil")
         for ri, render_image in enumerate(render_images[0]):
-            render_image.save(os.path.join(output_dir, str(i), f"render_{ri:03d}.png"))
+            render_image.save(os.path.join(output_subdir, f"{base_name}_render_{ri:03d}.png"))
         save_video(
-            render_images[0], os.path.join(output_dir, str(i), f"render.mp4"), fps=30
+            render_images[0],
+            os.path.join(output_subdir, f"{base_name}_render.mp4"),
+            fps=30
         )
         timer.end("Rendering")
 
+    # Extract mesh
     timer.start("Extracting mesh")
     meshes = model.extract_mesh(scene_codes, not args.bake_texture, resolution=args.mc_resolution)
     timer.end("Extracting mesh")
 
-    out_mesh_path = os.path.join(output_dir, str(i), f"mesh.{args.model_save_format}")
+    out_mesh_path = os.path.join(output_subdir, f"{base_name}_mesh.{args.model_save_format}")
+
     if args.bake_texture:
-        out_texture_path = os.path.join(output_dir, str(i), "texture.png")
+        out_texture_path = os.path.join(output_subdir, f"{base_name}_texture.png")
 
         timer.start("Baking texture")
         bake_output = bake_texture(meshes[0], model, scene_codes[0], args.texture_resolution)
         timer.end("Baking texture")
 
         timer.start("Exporting mesh and texture")
-        xatlas.export(out_mesh_path, meshes[0].vertices[bake_output["vmapping"]], bake_output["indices"], bake_output["uvs"], meshes[0].vertex_normals[bake_output["vmapping"]])
-        Image.fromarray((bake_output["colors"] * 255.0).astype(np.uint8)).transpose(Image.FLIP_TOP_BOTTOM).save(out_texture_path)
+        xatlas.export(
+            out_mesh_path,
+            meshes[0].vertices[bake_output["vmapping"]],
+            bake_output["indices"],
+            bake_output["uvs"],
+            meshes[0].vertex_normals[bake_output["vmapping"]]
+        )
+        Image.fromarray(
+            (bake_output["colors"] * 255.0).astype(np.uint8)
+        ).transpose(Image.FLIP_TOP_BOTTOM).save(out_texture_path)
         timer.end("Exporting mesh and texture")
 
     else:
@@ -191,9 +220,10 @@ for i, image in enumerate(images):
         meshes[0].export(out_mesh_path)
         timer.end("Exporting mesh")
 
-# After generation, automatically run the porting script to import assets into UE5
+# === Auto-import results to Unreal ===
 import subprocess
 import sys
+
 subprocess.run([
     sys.executable,
     "/home/mwaar/2025Fall-Gulfstream-Generative-AI-Capstone/backend/scripts/port_to_ue5.py"
